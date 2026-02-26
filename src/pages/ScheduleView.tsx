@@ -447,13 +447,15 @@ export default function ScheduleView({ user }: { user: User | null }) {
       const canvas = await html2canvas(scheduleRef.current, {
         scale: 2,
         backgroundColor: '#ffffff',
+        useCORS: true,
       });
-      const image = canvas.toDataURL('image/bmp');
+      const image = canvas.toDataURL('image/png');
       const link = document.createElement('a');
       link.href = image;
-      link.download = `Lich_Lam_Viec_${format(weekStart, 'dd_MM_yyyy')}.bmp`;
+      link.download = `Lich_Lam_Viec_${format(weekStart, 'dd_MM_yyyy')}.png`;
       link.click();
     } catch (err) {
+      console.error(err);
       alert('Có lỗi xảy ra khi chụp ảnh lịch.');
     }
   };
@@ -648,6 +650,7 @@ export default function ScheduleView({ user }: { user: User | null }) {
               Tuần {format(weekStart, 'dd/MM')} - {format(weekDays[6], 'dd/MM')}
             </div>
             <button onClick={handleNextWeek} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-600"><ChevronRight className="w-5 h-5" /></button>
+            <button onClick={handleCurrentWeek} className="px-3 py-1.5 text-sm font-medium bg-white text-indigo-600 rounded-lg shadow-sm hover:bg-indigo-50 transition-colors ml-1 hidden sm:block">Tuần hiện tại</button>
           </div>
           
           {role === 'Admin' && (
@@ -811,70 +814,81 @@ export default function ScheduleView({ user }: { user: User | null }) {
               </tr>
             </thead>
             <tbody>
-              {filteredEmployees.map(emp => (
-                <tr key={emp.id} className="group hover:bg-slate-50/50">
-                  <td className="p-4 border-b border-r border-slate-100 bg-white group-hover:bg-slate-50/50 sticky left-0 z-10">
-                    <div className="font-medium text-slate-800">{emp.name}</div>
-                    <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
-                      <span className="font-mono">{emp.code}</span>
-                      <span className="w-1 h-1 rounded-full bg-slate-300"></span>
-                      <span>{emp.department}</span>
-                    </div>
-                  </td>
-                  {weekDays.map(day => {
-                    const dateStr = format(day, 'yyyy-MM-dd');
-                    const sched = getSchedule(emp.id, dateStr);
-                    const taskObj = tasks.find(t => t.name === sched?.task && (t.department === emp.department || t.department === 'All'));
-                    const taskColor = taskObj?.color;
-                    const taskTextColor = taskObj?.text_color;
-                    const editable = canEdit(dateStr, sched?.start_time, emp.department);
-                    
-                    return (
-                      <td 
-                        key={dateStr} 
-                        className={clsx(
-                          "p-2 border-b border-slate-100 relative group/cell transition-all",
-                          editable ? "hover:bg-slate-100 cursor-pointer" : "cursor-default"
-                        )}
-                        onClick={() => editable && openEditModal(emp.id, dateStr)}
-                      >
-                        {sched ? (
-                          <div 
-                            className="h-full min-h-[60px] rounded-xl p-2 flex flex-col justify-between border border-black/5 shadow-sm"
-                            style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
+              {Array.from(new Set(filteredEmployees.map(e => e.department))).map(dept => (
+                <React.Fragment key={dept}>
+                  <tr className="bg-slate-100/80 border-y border-slate-200">
+                    <td colSpan={8} className="p-3 font-bold text-slate-700 uppercase tracking-wider text-sm sticky left-0 z-20 bg-slate-100/80">
+                      Bộ phận: {dept}
+                    </td>
+                  </tr>
+                  {filteredEmployees.filter(e => e.department === dept).map(emp => (
+                    <tr key={emp.id} className="group hover:bg-slate-50/50">
+                      <td className="p-4 border-b border-r border-slate-100 bg-white group-hover:bg-slate-50/50 sticky left-0 z-10">
+                        <div className="font-medium text-slate-800">{emp.name}</div>
+                        <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+                          <span className="font-mono">{emp.code}</span>
+                          <span className="w-1 h-1 rounded-full bg-slate-300"></span>
+                          <span>{emp.role}</span>
+                        </div>
+                      </td>
+                      {weekDays.map(day => {
+                        const dateStr = format(day, 'yyyy-MM-dd');
+                        const sched = getSchedule(emp.id, dateStr);
+                        const taskObj = tasks.find(t => t.name === sched?.task && (t.department === emp.department || t.department === 'All'));
+                        const taskColor = taskObj?.color;
+                        const taskTextColor = taskObj?.text_color;
+                        const editable = canEdit(dateStr, sched?.start_time, emp.department);
+                        
+                        return (
+                          <td 
+                            key={dateStr} 
+                            className={clsx(
+                              "p-2 border-b border-slate-100 relative group/cell transition-all",
+                              editable ? "hover:bg-slate-100 cursor-pointer" : "cursor-default"
+                            )}
+                            onClick={() => editable && openEditModal(emp.id, dateStr)}
                           >
-                            <div className="text-base font-black uppercase tracking-wide">{sched.shift_name}</div>
-                            
-                            {sched.task && sched.task !== 'Không' && (
+                            {sched ? (
                               <div 
-                                className="text-[10px] font-medium px-1.5 py-0.5 rounded mt-1 truncate"
-                                style={{ backgroundColor: taskColor, color: taskTextColor }}
+                                className="h-full min-h-[60px] rounded-xl p-2 flex flex-col justify-between border border-black/5 shadow-sm"
+                                style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
                               >
-                                {sched.task}
+                                <div className="text-sm font-black uppercase tracking-wide whitespace-pre-line leading-tight">
+                                  {sched.shift_name.toUpperCase() === 'OFF KHÔNG LƯƠNG' ? 'OFF\nKHÔNG LƯƠNG' : sched.shift_name}
+                                </div>
+                                
+                                {sched.task && sched.task !== 'Không' && (
+                                  <div 
+                                    className="text-[10px] font-medium px-1.5 py-0.5 rounded mt-1 truncate"
+                                    style={{ backgroundColor: taskColor, color: taskTextColor }}
+                                  >
+                                    {sched.task}
+                                  </div>
+                                )}
+
+                                {/* Tooltip */}
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-[200px] bg-slate-800 text-white text-xs rounded-lg py-1.5 px-3 opacity-0 group-hover/cell:opacity-100 pointer-events-none transition-opacity z-30 shadow-xl">
+                                  <div className="font-bold mb-1">{emp.name}</div>
+                                  <div>Ca: {sched.shift_name} ({sched.start_time} - {sched.end_time})</div>
+                                  {sched.task && sched.task !== 'Không' && <div>Nhiệm vụ: {sched.task}</div>}
+                                  {sched.note && <div className="mt-1 text-slate-300 italic border-t border-slate-600 pt-1">Ghi chú: {sched.note}</div>}
+                                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className={clsx(
+                                "h-full min-h-[60px] rounded-xl border border-dashed border-slate-200 flex items-center justify-center transition-opacity",
+                                editable ? "opacity-0 group-hover/cell:opacity-100" : "opacity-0"
+                              )}>
+                                <span className="text-xs text-slate-400 font-medium">+ Thêm ca</span>
                               </div>
                             )}
-
-                            {/* Tooltip */}
-                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-[200px] bg-slate-800 text-white text-xs rounded-lg py-1.5 px-3 opacity-0 group-hover/cell:opacity-100 pointer-events-none transition-opacity z-30 shadow-xl">
-                              <div className="font-bold mb-1">{emp.name}</div>
-                              <div>Ca: {sched.shift_name} ({sched.start_time} - {sched.end_time})</div>
-                              {sched.task && sched.task !== 'Không' && <div>Nhiệm vụ: {sched.task}</div>}
-                              {sched.note && <div className="mt-1 text-slate-300 italic border-t border-slate-600 pt-1">Ghi chú: {sched.note}</div>}
-                              <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className={clsx(
-                            "h-full min-h-[60px] rounded-xl border border-dashed border-slate-200 flex items-center justify-center transition-opacity",
-                            editable ? "opacity-0 group-hover/cell:opacity-100" : "opacity-0"
-                          )}>
-                            <span className="text-xs text-slate-400 font-medium">+ Thêm ca</span>
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -903,52 +917,68 @@ export default function ScheduleView({ user }: { user: User | null }) {
               </div>
               
               <div className="divide-y divide-slate-100">
-                {filteredEmployees.map(emp => {
-                  const sched = getSchedule(emp.id, dateStr);
-                  if (!sched && (isGuest || role === 'Nhân viên')) return null; // Hide empty for viewers on mobile
-                  
-                  const taskObj = tasks.find(t => t.name === sched?.task && (t.department === emp.department || t.department === 'All'));
-                  const taskColor = taskObj?.color;
-                  const taskTextColor = taskObj?.text_color;
-                  const editable = canEdit(dateStr, sched?.start_time, emp.department);
+                {Array.from(new Set(filteredEmployees.map(e => e.department))).map(dept => {
+                  const deptEmps = filteredEmployees.filter(e => e.department === dept);
+                  const hasVisibleEmps = deptEmps.some(emp => {
+                    const sched = getSchedule(emp.id, dateStr);
+                    return sched || (!isGuest && role !== 'Nhân viên');
+                  });
+                  if (!hasVisibleEmps) return null;
 
                   return (
-                    <div 
-                      key={emp.id} 
-                      onClick={() => editable && openEditModal(emp.id, dateStr)}
-                      className={clsx(
-                        "p-3 flex items-center justify-between",
-                        editable ? "active:bg-slate-50 cursor-pointer" : ""
-                      )}
-                    >
-                      <div>
-                        <div className="font-medium text-slate-800 text-sm">{emp.name}</div>
-                        <div className="text-xs text-slate-500 mt-0.5">{emp.department}</div>
+                    <React.Fragment key={dept}>
+                      <div className="bg-slate-100/80 px-4 py-2 text-xs font-bold text-slate-600 uppercase tracking-wider">
+                        {dept}
                       </div>
-                      
-                      {sched ? (
-                        <div className="flex flex-col items-end gap-1">
+                      {deptEmps.map(emp => {
+                        const sched = getSchedule(emp.id, dateStr);
+                        if (!sched && (isGuest || role === 'Nhân viên')) return null;
+                        
+                        const taskObj = tasks.find(t => t.name === sched?.task && (t.department === emp.department || t.department === 'All'));
+                        const taskColor = taskObj?.color;
+                        const taskTextColor = taskObj?.text_color;
+                        const editable = canEdit(dateStr, sched?.start_time, emp.department);
+
+                        return (
                           <div 
-                            className="px-3 py-1 rounded-lg text-sm font-black uppercase tracking-wide border border-black/5 shadow-sm"
-                            style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
+                            key={emp.id} 
+                            onClick={() => editable && openEditModal(emp.id, dateStr)}
+                            className={clsx(
+                              "p-3 flex items-center justify-between",
+                              editable ? "active:bg-slate-50 cursor-pointer" : ""
+                            )}
                           >
-                            {sched.shift_name}
+                            <div>
+                              <div className="font-medium text-slate-800 text-sm">{emp.name}</div>
+                              <div className="text-xs text-slate-500 mt-0.5">{emp.code}</div>
+                            </div>
+                            
+                            {sched ? (
+                              <div className="flex flex-col items-end gap-1">
+                                <div 
+                                  className="px-3 py-1 rounded-lg text-sm font-black uppercase tracking-wide border border-black/5 shadow-sm whitespace-pre-line text-right leading-tight"
+                                  style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
+                                >
+                                  {sched.shift_name.toUpperCase() === 'OFF KHÔNG LƯƠNG' ? 'OFF\nKHÔNG LƯƠNG' : sched.shift_name}
+                                </div>
+                                {sched.task && sched.task !== 'Không' && (
+                                  <span 
+                                    className="text-[10px] font-medium px-2 py-0.5 rounded-md"
+                                    style={{ backgroundColor: taskColor, color: taskTextColor }}
+                                  >
+                                    {sched.task}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-400 font-medium px-3 py-1.5 rounded-lg border border-dashed border-slate-200">
+                                + Thêm ca
+                              </div>
+                            )}
                           </div>
-                          {sched.task && sched.task !== 'Không' && (
-                            <span 
-                              className="text-[10px] font-medium px-2 py-0.5 rounded-md"
-                              style={{ backgroundColor: taskColor, color: taskTextColor }}
-                            >
-                              {sched.task}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-slate-400 font-medium px-3 py-1.5 rounded-lg border border-dashed border-slate-200">
-                          + Thêm ca
-                        </div>
-                      )}
-                    </div>
+                        );
+                      })}
+                    </React.Fragment>
                   );
                 })}
                 {filteredEmployees.length === 0 && (
