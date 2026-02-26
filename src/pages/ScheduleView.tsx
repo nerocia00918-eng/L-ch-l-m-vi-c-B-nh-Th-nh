@@ -379,10 +379,10 @@ export default function ScheduleView({ user }: { user: User | null }) {
 
       morningTruc = morningPool.find(e => e.id !== morningHotline?.id) || morningPool[1];
 
-      morningPool.forEach(emp => {
-        let task = 'Không';
-        if (emp.id === morningHotline?.id) task = 'Hotline';
-        else if (emp.id === morningTruc?.id) task = 'Trực cửa';
+let task = 'Không';
+if (emp.id === morningHotline?.id) task = 'Hotline';
+else if (emp.id === morningTruc?.id) task = 'Trực cửa';
+else task = 'Không'; // Ép buộc mọi trường hợp khác về 'Không'
 
         newSchedules.push({
           date: day,
@@ -399,10 +399,11 @@ export default function ScheduleView({ user }: { user: User | null }) {
       let afternoonVeSinh = afternoonPool[2];
 
       afternoonPool.forEach(emp => {
-        let task = 'Không';
-        if (emp.id === afternoonHotline?.id) task = 'Hotline';
-        else if (emp.id === afternoonTruc?.id) task = 'Trực cửa';
-        else if (emp.id === afternoonVeSinh?.id) task = 'Vệ sinh';
+let task = 'Không';
+if (emp.id === afternoonHotline?.id) task = 'Hotline';
+else if (emp.id === afternoonTruc?.id) task = 'Trực cửa';
+else if (emp.id === afternoonVeSinh?.id) task = 'Vệ sinh';
+else task = 'Không';
 
         newSchedules.push({
           date: day,
@@ -490,25 +491,33 @@ export default function ScheduleView({ user }: { user: User | null }) {
     }
 
     setSelectedCell({ date: dateStr, empId });
-    setEditData({
-      shift_id: sched?.shift_id || shifts[0]?.id || 0,
-      task: sched?.task || 'Không',
-      note: sched?.note || ''
-    });
+  setEditData({ 
+  shift_id: sched?.shift_id || (shifts.length > 0 ? shifts[0].id : 0), 
+  task: (sched && sched.task) ? sched.task : 'Không', 
+  note: sched?.note || '' 
+});
   };
 
-  const saveSchedule = async () => {
+const saveSchedule = async () => {
     if (!selectedCell) return;
+
+    // --- BẮT ĐẦU ĐOẠN DÁN MỚI ---
+    const finalData = { ...editData };
+    if (finalData.task === 'Tăng ca') {
+      finalData.task = 'Không';
+    }
+    // --- KẾT THÚC ĐOẠN DÁN MỚI ---
+
     await fetch('/api/schedules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         date: selectedCell.date,
         employee_id: selectedCell.empId,
-        shift_id: editData.shift_id,
-        task: editData.task,
+        shift_id: finalData.shift_id, // Sử dụng finalData thay vì editData
+        task: finalData.task,         // Sử dụng finalData thay vì editData
         status: 'Published',
-        note: editData.note
+        note: finalData.note          // Sử dụng finalData thay vì editData
       })
     });
     setSelectedCell(null);
