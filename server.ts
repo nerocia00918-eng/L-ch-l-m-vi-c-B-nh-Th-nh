@@ -311,11 +311,14 @@ try {
 // Seed initial data if empty
 const employeeCount = db.prepare('SELECT COUNT(*) as count FROM employees').get() as { count: number };
 if (employeeCount.count === 0) {
-  const insertEmployee = db.prepare('INSERT INTO employees (code, name, department, role, phone) VALUES (?, ?, ?, ?, ?)');
-  insertEmployee.run('NV001', 'Nguyễn Văn A', 'Bán hàng', 'Nhân viên', '0123456789');
-  insertEmployee.run('NV002', 'Trần Thị B', 'Quản lý', 'Tổ trưởng', '0987654321');
-  insertEmployee.run('NV003', 'Lê Văn C', 'Kỹ thuật', 'Nhân viên', '0111222333');
-  insertEmployee.run('NV004', 'Phạm Thị D', 'Thu ngân', 'Nhân viên', '0444555666');
+  const insertEmployee = db.prepare('INSERT INTO employees (code, name, department, role, phone, password) VALUES (?, ?, ?, ?, ?, ?)');
+  insertEmployee.run('ADMIN', 'Quản trị viên', 'Quản lý', 'Admin', '0999999999', '1234');
+  
+  const insertEmployeeNoPass = db.prepare('INSERT INTO employees (code, name, department, role, phone) VALUES (?, ?, ?, ?, ?)');
+  insertEmployeeNoPass.run('NV001', 'Nguyễn Văn A', 'Bán hàng', 'Nhân viên', '0123456789');
+  insertEmployeeNoPass.run('NV002', 'Trần Thị B', 'Quản lý', 'Tổ trưởng', '0987654321');
+  insertEmployeeNoPass.run('NV003', 'Lê Văn C', 'Kỹ thuật', 'Nhân viên', '0111222333');
+  insertEmployeeNoPass.run('NV004', 'Phạm Thị D', 'Thu ngân', 'Nhân viên', '0444555666');
 
   const insertShift = db.prepare('INSERT INTO shifts (name, start_time, end_time, color, text_color) VALUES (?, ?, ?, ?, ?)');
   insertShift.run('SÁNG', '08:30', '17:30', '#e0f2fe', '#0369a1');
