@@ -9,38 +9,37 @@ import { toPng } from 'html-to-image';
 
 export const normalizeDept = (dept?: string) => {
   if (!dept) return '';
-  let d = dept
+  const d = dept
     .trim()
     .normalize('NFC')
     .toLowerCase()
     .replace(/[\u00A0\s]+/g, ' ')
-    .replace(/^(ban|bộ phận|khối|phòng|tổ|đội)\s+/gi, '')
+    .replace(/^(ban|bộ phận|khối|phòng|tổ|đội|bp\.?)\s+/gi, '')
     .trim();
 
   // Normalize all variations of Management / Quản lý / Quản trị / Admin / BQL / QL / Ban Giám Đốc / Điều Hành
   if (
-    d === 'quản lí' ||
-    d === 'quản lý' ||
+    d.includes('quản') ||
+    d.includes('admin') ||
+    d.includes('giám đốc') ||
+    d.includes('giam doc') ||
+    d.includes('điều hành') ||
+    d.includes('dieu hanh') ||
+    d.includes('bql') ||
+    d.includes('management') ||
+    d.includes('manager') ||
     d === 'ql' ||
-    d === 'bql' ||
-    d === 'admin' ||
-    d === 'quản trị' ||
-    d === 'quản trị viên' ||
-    d === 'ban giám đốc' ||
-    d === 'giám đốc' ||
-    d === 'điều hành' ||
-    d === 'bộ phận quản lý' ||
-    d === 'ban quản lý'
+    /(^|\s)ql($|\s)/i.test(d)
   ) {
     return 'quản lý';
   }
 
   // Common synonyms for standard departments
-  if (d === 'bán hàng' || d === 'sale' || d === 'sales') return 'bán hàng';
-  if (d === 'thu ngân' || d === 'cashier') return 'thu ngân';
-  if (d === 'kỹ thuật' || d === 'ky thuat' || d === 'it') return 'kỹ thuật';
-  if (d === 'kho' || d === 'kho vận') return 'kho';
-  if (d === 'giao vận' || d === 'shipper' || d === 'giao hàng') return 'giao vận';
+  if (d.includes('bán hàng') || d.includes('ban hang') || d === 'sale' || d === 'sales') return 'bán hàng';
+  if (d.includes('thu ngân') || d.includes('thu ngan') || d === 'cashier') return 'thu ngân';
+  if (d.includes('kỹ thuật') || d.includes('ky thuat') || d === 'it') return 'kỹ thuật';
+  if (d.includes('kho') || d.includes('kho vận') || d.includes('kho van')) return 'kho';
+  if (d.includes('giao vận') || d.includes('giao van') || d.includes('shipper') || d.includes('giao hàng') || d.includes('giao hang')) return 'giao vận';
 
   return d;
 };
@@ -129,12 +128,8 @@ export default function ScheduleView({ user }: { user: User | null }) {
   const isGuest = !user;
 
   useEffect(() => {
-    if (user && user.role === 'Nhân viên') {
-      setViewMode('dept');
-    } else {
-      setViewMode('all');
-    }
-  }, [user]);
+    setViewMode('all');
+  }, []);
 
   const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 }); // Monday
   const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(weekStart, i));
@@ -191,8 +186,9 @@ export default function ScheduleView({ user }: { user: User | null }) {
 
     return employees
       .filter(e => {
-        // Only hide if is_hidden is explicitly 1, '1', or true, unless showHidden is active
-        const isHidden = e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true;
+        // Management & Admin department must ALWAYS be displayed on the schedule
+        const isManagement = e.role === 'Admin' || normalizeDept(e.department) === 'quản lý';
+        const isHidden = !isManagement && (e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true);
         if (!showHidden && isHidden) return false;
 
         const cleanSearch = search.trim().toLowerCase();
@@ -226,6 +222,8 @@ export default function ScheduleView({ user }: { user: User | null }) {
 
   const hiddenInCurrentView = useMemo(() => {
     return employees.filter(e => {
+      const isManagement = e.role === 'Admin' || normalizeDept(e.department) === 'quản lý';
+      if (isManagement) return false;
       const isHidden = e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true;
       if (!isHidden) return false;
       if (viewMode === 'me' && user) return e.id === user.id;
@@ -544,7 +542,7 @@ export default function ScheduleView({ user }: { user: User | null }) {
     if (role === 'Nhân viên') return false;
     if (isMonthLocked) return false;
     
-    if (role === 'Tổ trưởng' && user?.department !== empDept) return false;
+    if (role === 'Tổ trưởng' && normalizeDept(user?.department) !== normalizeDept(empDept)) return false;
     
     // 24h lock logic
     if (shiftStartTime) {
@@ -564,7 +562,7 @@ export default function ScheduleView({ user }: { user: User | null }) {
     if (!canEdit(dateStr, sched?.start_time, emp?.department)) {
       if (isGuest || role === 'Nhân viên') return;
       if (isMonthLocked) return alert('Tháng này đã khóa lịch, không thể sửa!');
-      if (role === 'Tổ trưởng' && user?.department !== emp?.department) return alert('Bạn chỉ được sửa lịch của bộ phận mình!');
+      if (role === 'Tổ trưởng' && normalizeDept(user?.department) !== normalizeDept(emp?.department)) return alert('Bạn chỉ được sửa lịch của bộ phận mình!');
       if (role !== 'Admin') return alert('Không thể sửa lịch trước 24h!');
     }
 

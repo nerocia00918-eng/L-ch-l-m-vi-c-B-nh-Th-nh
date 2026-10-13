@@ -320,26 +320,33 @@ export default function EmployeeList({ role }: { role: Role }) {
                       )}
                     </td>
                     <td className="p-4">
-                      <button
-                        onClick={() => toggleHide(emp.id)}
-                        disabled={role !== 'Admin'}
-                        title={role !== 'Admin' ? 'Chỉ Admin mới có quyền đổi' : 'Bấm để ẩn hoặc hiện trên lịch'}
-                        className={clsx(
-                          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
-                          role === 'Admin' ? "cursor-pointer" : "cursor-default opacity-80",
-                          !isHidden 
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" 
-                            : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
-                        )}
-                      >
-                        <span className={clsx(
-                          "w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px]",
-                          !isHidden ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-400 bg-white"
-                        )}>
-                          {!isHidden && "✓"}
+                      {emp.role === 'Admin' || normalizeDept(emp.department) === 'quản lý' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200" title="Bộ phận Quản lý luôn luôn hiển thị trên lịch làm việc">
+                          <span className="w-3.5 h-3.5 rounded border border-emerald-600 bg-emerald-600 text-white flex items-center justify-center text-[10px]">✓</span>
+                          <span>Luôn hiện (Quản lý)</span>
                         </span>
-                        <span>{!isHidden ? 'Hiện trên lịch' : 'Đã ẩn lịch'}</span>
-                      </button>
+                      ) : (
+                        <button
+                          onClick={() => toggleHide(emp.id)}
+                          disabled={role !== 'Admin'}
+                          title={role !== 'Admin' ? 'Chỉ Admin mới có quyền đổi' : 'Bấm để ẩn hoặc hiện trên lịch'}
+                          className={clsx(
+                            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                            role === 'Admin' ? "cursor-pointer" : "cursor-default opacity-80",
+                            !isHidden 
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" 
+                              : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                          )}
+                        >
+                          <span className={clsx(
+                            "w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px]",
+                            !isHidden ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-400 bg-white"
+                          )}>
+                            {!isHidden && "✓"}
+                          </span>
+                          <span>{!isHidden ? 'Hiện trên lịch' : 'Đã ẩn lịch'}</span>
+                        </button>
+                      )}
                     </td>
                     {role === 'Admin' && (
                       <td className="p-4 text-right">
@@ -418,25 +425,32 @@ export default function EmployeeList({ role }: { role: Role }) {
                 </div>
                 
                 <div className="flex justify-end pt-1">
-                  <button
-                    onClick={() => toggleHide(emp.id)}
-                    disabled={role !== 'Admin'}
-                    className={clsx(
-                      "inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
-                      role === 'Admin' ? "cursor-pointer" : "cursor-default opacity-80",
-                      !emp.is_hidden 
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
-                        : "bg-slate-100 text-slate-500 border-slate-200"
-                    )}
-                  >
-                    <span className={clsx(
-                      "w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px]",
-                      !emp.is_hidden ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-400 bg-white"
-                    )}>
-                      {!emp.is_hidden && "✓"}
+                  {emp.role === 'Admin' || normalizeDept(emp.department) === 'quản lý' ? (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <span className="w-3.5 h-3.5 rounded border border-emerald-600 bg-emerald-600 text-white flex items-center justify-center text-[10px]">✓</span>
+                      <span>Luôn hiện (Quản lý)</span>
                     </span>
-                    <span>{!emp.is_hidden ? 'Hiện trên lịch' : 'Đã ẩn lịch'}</span>
-                  </button>
+                  ) : (
+                    <button
+                      onClick={() => toggleHide(emp.id)}
+                      disabled={role !== 'Admin'}
+                      className={clsx(
+                        "inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                        role === 'Admin' ? "cursor-pointer" : "cursor-default opacity-80",
+                        !emp.is_hidden 
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+                          : "bg-slate-100 text-slate-500 border-slate-200"
+                      )}
+                    >
+                      <span className={clsx(
+                        "w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px]",
+                        !emp.is_hidden ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-400 bg-white"
+                      )}>
+                        {!emp.is_hidden && "✓"}
+                      </span>
+                      <span>{!emp.is_hidden ? 'Hiện trên lịch' : 'Đã ẩn lịch'}</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
