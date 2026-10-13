@@ -3,9 +3,47 @@ import React from 'react';
 import { format, addDays, startOfWeek, subWeeks, isBefore, addHours, parseISO, isSameDay } from 'date-fns';
 import { vi } from 'date-fns/locale';
 import { User, socket } from '../App';
-import { ChevronLeft, ChevronRight, Copy, Lock, Search, Filter, Calendar as CalendarIcon, Camera, Info, Wand2, X, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Copy, Lock, Search, Filter, Calendar as CalendarIcon, Camera, Info, Wand2, X, Trash2, Loader2, Users, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
-import html2canvas from 'html2canvas';
+import { toPng } from 'html-to-image';
+
+export const normalizeDept = (dept?: string) => {
+  if (!dept) return '';
+  let d = dept
+    .trim()
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[\u00A0\s]+/g, ' ')
+    .replace(/^(ban|bộ phận|khối|phòng|tổ|đội)\s+/gi, '')
+    .trim();
+
+  // Normalize all variations of Management / Quản lý / Quản trị / Admin / BQL / QL / Ban Giám Đốc / Điều Hành
+  if (
+    d === 'quản lí' ||
+    d === 'quản lý' ||
+    d === 'ql' ||
+    d === 'bql' ||
+    d === 'admin' ||
+    d === 'quản trị' ||
+    d === 'quản trị viên' ||
+    d === 'ban giám đốc' ||
+    d === 'giám đốc' ||
+    d === 'điều hành' ||
+    d === 'bộ phận quản lý' ||
+    d === 'ban quản lý'
+  ) {
+    return 'quản lý';
+  }
+
+  // Common synonyms for standard departments
+  if (d === 'bán hàng' || d === 'sale' || d === 'sales') return 'bán hàng';
+  if (d === 'thu ngân' || d === 'cashier') return 'thu ngân';
+  if (d === 'kỹ thuật' || d === 'ky thuat' || d === 'it') return 'kỹ thuật';
+  if (d === 'kho' || d === 'kho vận') return 'kho';
+  if (d === 'giao vận' || d === 'shipper' || d === 'giao hàng') return 'giao vận';
+
+  return d;
+};
 
 interface Employee {
   id: number;
@@ -13,6 +51,9 @@ interface Employee {
   name: string;
   department: string;
   role: string;
+  start_date?: string;
+  end_date?: string;
+  is_hidden?: number | boolean;
 }
 
 interface Shift {
@@ -47,404 +88,1278 @@ interface Schedule {
   note?: string;
 }
 
+interface Announcement {
+  id: number;
+  type: string;
+  target_type: string;
+  target_value: string;
+  message: string;
+  start_time: string;
+  end_time: string;
+  created_by: number;
+  creator_name: string;
+  viewed_at?: string;
+}
+
 export default function ScheduleView({ user }: { user: User | null }) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [lockedMonths, setLockedMonths] = useState<string[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [activeAnnouncements, setActiveAnnouncements] = useState<Announcement[]>([]);
+  const [currentAnnIndex, setCurrentAnnIndex] = useState(0);
+  
+  const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('All');
-  const [selectedCell, setSelectedCell] = useState<{ date: string; empId: number } | null>(null);
+  const [viewMode, setViewMode] = useState<'all' | 'dept' | 'me'>('all');
+  const [showHidden, setShowHidden] = useState(false);
+  
+  const [selectedCell, setSelectedCell] = useState<{ date: string, empId: number } | null>(null);
   const [editData, setEditData] = useState({ shift_id: 0, task: 'Không', note: '' });
+  
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [newTask, setNewTask] = useState({ name: '', color: '#4c1d95', text_color: '#ffffff' });
+
+  const scheduleRef = useRef<HTMLDivElement>(null);
+
+  const role = user ? user.role : 'Nhân viên';
+  const isGuest = !user;
+
+  useEffect(() => {
+    if (user && user.role === 'Nhân viên') {
+      setViewMode('dept');
+    } else {
+      setViewMode('all');
+    }
+  }, [user]);
+
+  const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 }); // Monday
+  const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(weekStart, i));
+  const currentMonthStr = format(weekStart, 'yyyy-MM');
+  const isMonthLocked = lockedMonths.includes(currentMonthStr);
 
   const fetchData = async () => {
-    try {
-      setLoading(true);
-      const start = format(startOfWeek(currentDate, { weekStartsOn: 1 }), 'yyyy-MM-dd');
-      const end = format(addDays(parseISO(start), 6), 'yyyy-MM-dd');
+    const [empRes, shiftRes, schedRes, lockRes, annRes, taskRes] = await Promise.all([
+      fetch('/api/employees'),
+      fetch('/api/shifts'),
+      fetch(`/api/schedules?start=${format(weekDays[0], 'yyyy-MM-dd')}&end=${format(weekDays[6], 'yyyy-MM-dd')}`),
+      fetch('/api/locked-months'),
+      fetch(`/api/announcements${user ? `?employee_id=${user.id}&department=${user.department}` : ''}`),
+      fetch('/api/tasks')
+    ]);
+    
+    const empData = await empRes.json();
+    const shiftData = await shiftRes.json();
+    const schedData = await schedRes.json();
+    const lockData = await lockRes.json();
+    const annData = await annRes.json();
+    const taskData = await taskRes.json();
 
-      const [empRes, shiftRes, schedRes, taskRes] = await Promise.all([
-        fetch('/api/employees'),
-        fetch('/api/shifts'),
-        fetch(`/api/schedules?start=${start}&end=${end}`),
-        fetch(`/api/tasks?department=${user?.department || 'All'}`)
-      ]);
+    setEmployees(empData);
+    setShifts(shiftData);
+    setSchedules(schedData);
+    setLockedMonths(lockData);
+    setAnnouncements(annData);
+    setTasks(taskData);
 
-      const [empData, shiftData, schedData, taskData] = await Promise.all([
-        empRes.json(),
-        shiftRes.json(),
-        schedRes.json(),
-        taskRes.json()
-      ]);
-
-      setEmployees(empData);
-      setShifts(shiftData);
-      setSchedules(schedData);
-      setTasks(taskData);
-      if (shiftData.length > 0 && editData.shift_id === 0) {
-        setEditData(prev => ({ ...prev, shift_id: shiftData[0].id }));
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
-      setLoading(false);
+    if (user) {
+      const active = annData.filter((a: Announcement) => !a.viewed_at);
+      setActiveAnnouncements(active);
     }
   };
 
   useEffect(() => {
     fetchData();
     socket.on('schedules:updated', fetchData);
-    socket.on('employees:updated', fetchData);
+    socket.on('settings:updated', fetchData);
+    socket.on('announcements:updated', fetchData);
     socket.on('tasks:updated', fetchData);
     return () => {
-      socket.off('schedules:updated');
-      socket.off('employees:updated');
-      socket.off('tasks:updated');
+      socket.off('schedules:updated', fetchData);
+      socket.off('settings:updated', fetchData);
+      socket.off('announcements:updated', fetchData);
+      socket.off('tasks:updated', fetchData);
     };
   }, [currentDate]);
 
-  const weekDays = useMemo(() => {
-    const start = startOfWeek(currentDate, { weekStartsOn: 1 });
-    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  }, [currentDate]);
-
   const filteredEmployees = useMemo(() => {
-    return employees.filter(emp => {
-      const matchesSearch = emp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          emp.code.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesDept = deptFilter === 'All' || emp.department === deptFilter;
-      return matchesSearch && matchesDept;
+    const DEPARTMENTS = ['Quản lý', 'Bán hàng', 'Thu ngân', 'Kỹ thuật', 'Giao vận', 'Kho'];
+    const ROLES = ['Admin', 'Tổ trưởng', 'Nhân viên'];
+
+    return employees
+      .filter(e => {
+        // Only hide if is_hidden is explicitly 1, '1', or true, unless showHidden is active
+        const isHidden = e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true;
+        if (!showHidden && isHidden) return false;
+
+        const cleanSearch = search.trim().toLowerCase();
+        const matchName = !cleanSearch || 
+          e.name.toLowerCase().includes(cleanSearch) || 
+          e.code.toLowerCase().includes(cleanSearch);
+        
+        let matchView = true;
+        if (viewMode === 'me' && user) {
+          matchView = e.id === user.id;
+        } else if (viewMode === 'dept' && user) {
+          matchView = normalizeDept(e.department) === normalizeDept(user.department);
+        } else {
+          matchView = deptFilter === 'All' || normalizeDept(e.department) === normalizeDept(deptFilter);
+        }
+        
+        return matchName && matchView;
+      })
+      .sort((a, b) => {
+        const deptA = DEPARTMENTS.findIndex(d => normalizeDept(d) === normalizeDept(a.department));
+        const deptB = DEPARTMENTS.findIndex(d => normalizeDept(d) === normalizeDept(b.department));
+        if (deptA !== deptB) return (deptA === -1 ? 99 : deptA) - (deptB === -1 ? 99 : deptB);
+        
+        const roleA = ROLES.indexOf(a.role);
+        const roleB = ROLES.indexOf(b.role);
+        if (roleA !== roleB) return (roleA === -1 ? 99 : roleA) - (roleB === -1 ? 99 : roleB);
+        
+        return a.name.localeCompare(b.name);
+      });
+  }, [employees, search, deptFilter, viewMode, user, showHidden]);
+
+  const hiddenInCurrentView = useMemo(() => {
+    return employees.filter(e => {
+      const isHidden = e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true;
+      if (!isHidden) return false;
+      if (viewMode === 'me' && user) return e.id === user.id;
+      if (viewMode === 'dept' && user) return normalizeDept(e.department) === normalizeDept(user.department);
+      if (deptFilter !== 'All') return normalizeDept(e.department) === normalizeDept(deptFilter);
+      return true;
     });
-  }, [employees, searchTerm, deptFilter]);
+  }, [employees, viewMode, user, deptFilter]);
 
-  const handleCellClick = (date: Date, empId: number) => {
-    const dateStr = format(date, 'yyyy-MM-dd');
-    const sched = schedules.find(s => s.date === dateStr && s.employee_id === empId);
-    
-    setSelectedCell({ date: dateStr, empId });
-    setEditData({
-      shift_id: sched?.shift_id || (shifts.length > 0 ? shifts[0].id : 0),
-      task: (sched && sched.task && sched.task !== 'Tăng ca') ? sched.task : 'Không',
-      note: sched?.note || ''
-    });
-  };
-
-  const saveSchedule = async () => {
-    if (!selectedCell) return;
-
-    // Chặn "Tăng ca" trước khi gửi lên máy chủ
-    let finalTask = editData.task;
-    if (finalTask === 'Tăng ca') {
-      finalTask = 'Không';
-    }
-
+  const handleUnhideDept = async (targetDept?: string) => {
     try {
-      await fetch('/api/schedules', {
+      const res = await fetch('/api/employees/unhide-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          date: selectedCell.date,
-          employee_id: selectedCell.empId,
-          shift_id: editData.shift_id,
-          task: finalTask,
-          status: 'Published',
-          note: editData.note
-        })
+        body: JSON.stringify({ department: targetDept || 'All' })
       });
-      setSelectedCell(null);
-      fetchData();
-    } catch (error) {
-      alert('Lỗi khi lưu lịch làm việc');
+      if (res.ok) {
+        fetchData();
+      }
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  const autoSchedule = async () => {
-    if (!confirm('Hệ thống sẽ tự động phân bổ Hotline, Trực cửa, Vệ sinh cho tuần này. Bạn chắc chắn chứ?')) return;
+  const getSchedule = (empId: number, dateStr: string) => {
+    return schedules.find(s => s.employee_id === empId && s.date === dateStr);
+  };
+
+  const handlePrevWeek = () => setCurrentDate(subWeeks(currentDate, 1));
+  const handleNextWeek = () => setCurrentDate(addDays(currentDate, 7));
+  const handleCurrentWeek = () => setCurrentDate(new Date());
+
+  const handleCopyWeek = async () => {
+    if (isMonthLocked) return alert('Tháng này đã khóa lịch!');
+    if (!confirm('Bạn có chắc muốn copy lịch từ tuần trước sang tuần này?')) return;
     
-    const newSchedules = [];
-    const deptEmployees = employees.filter(e => e.department === user?.department);
+    const prevWeekStart = format(subWeeks(weekStart, 1), 'yyyy-MM-dd');
+    const currWeekStart = format(weekStart, 'yyyy-MM-dd');
     
-    for (const day of weekDays.map(d => format(d, 'yyyy-MM-dd'))) {
-      const daySchedules = schedules.filter(s => s.date === day);
-      const morningPool = deptEmployees.filter(e => {
-        const s = daySchedules.find(sd => sd.employee_id === e.id);
-        return s?.shift_name === 'SÁNG';
-      });
-      const afternoonPool = deptEmployees.filter(e => {
-        const s = daySchedules.find(sd => sd.employee_id === e.id);
-        return s?.shift_name === 'CHIỀU';
+    await fetch('/api/schedules/copy-week', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromStartDate: prevWeekStart, toStartDate: currWeekStart })
+    });
+  };
+
+  const handleAddTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        department: user.department,
+        name: newTask.name,
+        color: newTask.color,
+        text_color: newTask.text_color
+      })
+    });
+    setShowTaskForm(false);
+    setNewTask({ name: '', color: '#4c1d95', text_color: '#ffffff' });
+  };
+
+  const handleDeleteTask = async (id: number) => {
+    if (!confirm('Xóa nhiệm vụ này?')) return;
+    await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+  };
+
+  const getDeptTasks = (dept: string) => {
+    return tasks.filter(t => t.department === dept || t.department === 'All');
+  };
+
+  const handleMarkAsSeen = async (annId: number) => {
+    if (!user) return;
+    await fetch(`/api/announcements/${annId}/view`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee_id: user.id })
+    });
+    
+    const nextIndex = currentAnnIndex + 1;
+    if (nextIndex < activeAnnouncements.length) {
+      setCurrentAnnIndex(nextIndex);
+    } else {
+      setActiveAnnouncements([]);
+      setCurrentAnnIndex(0);
+    }
+    fetchData();
+  };
+
+  const autoScheduleSales = async () => {
+    if (isMonthLocked) return alert('Tháng này đã khóa lịch!');
+    
+    const salesEmps = employees.filter(e => e.department === 'Bán hàng');
+    if (salesEmps.length < 5) {
+      alert('Cần ít nhất 5 nhân viên Bán hàng để xếp lịch tự động!');
+      return;
+    }
+
+    const morningShift = shifts.find(s => s.name === 'SÁNG');
+    const afternoonShift = shifts.find(s => s.name === 'CHIỀU');
+    const offShift = shifts.find(s => s.name === 'OFF TUẦN');
+
+    if (!morningShift || !afternoonShift || !offShift) {
+      alert('Không tìm thấy ca SÁNG, CHIỀU hoặc OFF TUẦN trong hệ thống!');
+      return;
+    }
+
+    if (!confirm('Hệ thống sẽ tự động xếp lịch cho bộ phận Bán hàng tuần này. Các ca đã xếp (trừ ca OFF) sẽ bị ghi đè. Bạn có chắc chắn?')) return;
+
+    const days = weekDays.map(d => format(d, 'yyyy-MM-dd'));
+    
+    // Get current schedules for this week for sales
+    const currentWeekSchedules = schedules.filter(s => 
+      salesEmps.some(e => e.id === s.employee_id) && 
+      days.includes(s.date)
+    );
+
+    // Determine OFF days
+    const empOffDays = new Map<number, string[]>();
+    salesEmps.forEach(emp => empOffDays.set(emp.id, []));
+
+    currentWeekSchedules.forEach(s => {
+      if (s.shift_name.includes('OFF')) {
+        empOffDays.get(s.employee_id)?.push(s.date);
+      }
+    });
+
+    // Assign missing OFFs to balance staff per day
+    for (const emp of salesEmps) {
+      if (empOffDays.get(emp.id)?.length === 0) {
+        let minOffs = 999;
+        let bestDay = days[0];
+        for (const day of days) {
+          let offCount = 0;
+          empOffDays.forEach(offs => {
+            if (offs.includes(day)) offCount++;
+          });
+          if (offCount < minOffs) {
+            minOffs = offCount;
+            bestDay = day;
+          }
+        }
+        empOffDays.get(emp.id)?.push(bestDay);
+      }
+    }
+
+    const newSchedules: any[] = [];
+    let prevAfternoonEmps: Employee[] = [];
+    let prevAfternoonHotline: Employee | null = null;
+
+    for (let i = 0; i < days.length; i++) {
+      const day = days[i];
+      const workingEmps = salesEmps.filter(emp => !empOffDays.get(emp.id)?.includes(day));
+      const offEmps = salesEmps.filter(emp => empOffDays.get(emp.id)?.includes(day));
+
+      // Add OFF schedules
+      offEmps.forEach(emp => {
+        const existing = currentWeekSchedules.find(s => s.employee_id === emp.id && s.date === day);
+        if (!existing) {
+          newSchedules.push({
+            date: day,
+            employee_id: emp.id,
+            shift_id: offShift.id,
+            task: 'Không',
+            status: 'Published'
+          });
+        }
       });
 
-      // Logic xếp ca sáng
-      const morningHotline = morningPool[0];
-      const morningTruc = morningPool.find(e => e.id !== morningHotline?.id) || morningPool[1];
+      let morningPool: Employee[] = [];
+      let afternoonPool: Employee[] = [];
+      let unassigned = [...workingEmps];
+
+      // Rule: Day before OFF -> Morning
+      const nextDay = i < days.length - 1 ? days[i+1] : null;
+      if (nextDay) {
+        const offNextDay = unassigned.filter(emp => empOffDays.get(emp.id)?.includes(nextDay));
+        offNextDay.forEach(emp => {
+          if (morningPool.length < 2) {
+            morningPool.push(emp);
+            unassigned = unassigned.filter(e => e.id !== emp.id);
+          }
+        });
+      }
+
+      // Rule: Day after OFF -> Afternoon
+      const prevDay = i > 0 ? days[i-1] : null;
+      if (prevDay) {
+        const offPrevDay = unassigned.filter(emp => empOffDays.get(emp.id)?.includes(prevDay));
+        offPrevDay.forEach(emp => {
+          if (afternoonPool.length < 3) {
+            afternoonPool.push(emp);
+            unassigned = unassigned.filter(e => e.id !== emp.id);
+          }
+        });
+      }
+
+      // Fill remaining Morning
+      while (morningPool.length < 2 && unassigned.length > 0) {
+        morningPool.push(unassigned.pop()!);
+      }
+
+      // Fill remaining Afternoon
+      while (afternoonPool.length < 3 && unassigned.length > 0) {
+        afternoonPool.push(unassigned.pop()!);
+      }
+
+      // If we still have unassigned, put them in Afternoon
+      unassigned.forEach(emp => afternoonPool.push(emp));
+
+      // Assign Tasks for Morning (1 Hotline, 1 Trực cửa)
+      let morningHotline: Employee | null = null;
+      let morningTruc: Employee | null = null;
+
+      if (prevAfternoonHotline && morningPool.some(e => e.id === prevAfternoonHotline!.id)) {
+        morningHotline = morningPool.find(e => e.id === prevAfternoonHotline!.id) || null;
+      } else if (prevAfternoonEmps.length > 0) {
+        const candidate = morningPool.find(e => prevAfternoonEmps.some(pe => pe.id === e.id));
+        if (candidate) morningHotline = candidate;
+      }
+
+      if (!morningHotline && morningPool.length > 0) {
+        morningHotline = morningPool[0];
+      }
+
+      morningTruc = morningPool.find(e => e.id !== morningHotline?.id) || morningPool[1];
 
       morningPool.forEach(emp => {
         let task = 'Không';
         if (emp.id === morningHotline?.id) task = 'Hotline';
         else if (emp.id === morningTruc?.id) task = 'Trực cửa';
-        else task = 'Không'; // Đảm bảo không nhảy "Tăng ca"
 
         newSchedules.push({
           date: day,
           employee_id: emp.id,
-          shift_id: daySchedules.find(s => s.employee_id === emp.id)?.shift_id,
+          shift_id: morningShift.id,
           task: task,
           status: 'Published'
         });
       });
 
-      // Logic xếp ca chiều
-      const afternoonHotline = afternoonPool[0];
-      const afternoonTruc = afternoonPool.find(e => e.id !== afternoonHotline?.id) || afternoonPool[1];
-      const afternoonVeSinh = afternoonPool[2];
+      // Assign Tasks for Afternoon (1 Hotline, 1 Trực cửa, 1 Vệ sinh)
+      let afternoonHotline = afternoonPool[0];
+      let afternoonTruc = afternoonPool[1];
+      let afternoonVeSinh = afternoonPool[2];
 
       afternoonPool.forEach(emp => {
         let task = 'Không';
         if (emp.id === afternoonHotline?.id) task = 'Hotline';
         else if (emp.id === afternoonTruc?.id) task = 'Trực cửa';
         else if (emp.id === afternoonVeSinh?.id) task = 'Vệ sinh';
-        else task = 'Không'; // Đảm bảo không nhảy "Tăng ca"
 
         newSchedules.push({
           date: day,
           employee_id: emp.id,
-          shift_id: daySchedules.find(s => s.employee_id === emp.id)?.shift_id,
+          shift_id: afternoonShift.id,
           task: task,
           status: 'Published'
         });
       });
+
+      prevAfternoonEmps = afternoonPool;
+      prevAfternoonHotline = afternoonHotline;
     }
 
-    for (const s of newSchedules) {
-      await fetch('/api/schedules', {
+    try {
+      const res = await fetch('/api/schedules/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(s)
+        body: JSON.stringify({ schedules: newSchedules })
       });
+      if (res.ok) {
+        alert('Lịch đã được tối ưu hóa!');
+        fetchData();
+      }
+    } catch (e) {
+      alert('Lỗi khi xếp lịch tự động');
     }
-    fetchData();
   };
 
-  if (loading && schedules.length === 0) return <div className="p-8 text-center">Đang tải dữ liệu...</div>;
+  const toggleMonthLock = async () => {
+    if (role !== 'Admin') return;
+    await fetch('/api/locked-months', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ month: currentMonthStr, locked: !isMonthLocked })
+    });
+  };
+
+  const [isCapturing, setIsCapturing] = useState(false);
+
+  const captureSchedule = async () => {
+    if (!scheduleRef.current || isCapturing) return;
+    setIsCapturing(true);
+    try {
+      const dataUrl = await toPng(scheduleRef.current, {
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        pixelRatio: 2,
+      });
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `Lich_Lam_Viec_${format(weekStart, 'dd_MM_yyyy')}.png`;
+      link.click();
+    } catch (err) {
+      console.error('Error capturing schedule:', err);
+      alert('Có lỗi xảy ra khi chụp ảnh lịch. Hãy thử lại.');
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  const canEdit = (dateStr: string, shiftStartTime?: string, empDept?: string) => {
+    if (isGuest) return false;
+    if (role === 'Nhân viên') return false;
+    if (isMonthLocked) return false;
+    
+    if (role === 'Tổ trưởng' && user?.department !== empDept) return false;
+    
+    // 24h lock logic
+    if (shiftStartTime) {
+      const shiftDateTime = parseISO(`${dateStr}T${shiftStartTime}`);
+      const now = new Date();
+      const diffHours = (shiftDateTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+      if (diffHours < 24 && role !== 'Admin') return false; // Admin can override
+    }
+    
+    return true;
+  };
+
+  const openEditModal = (empId: number, dateStr: string) => {
+    const sched = getSchedule(empId, dateStr);
+    const emp = employees.find(e => e.id === empId);
+    
+    if (!canEdit(dateStr, sched?.start_time, emp?.department)) {
+      if (isGuest || role === 'Nhân viên') return;
+      if (isMonthLocked) return alert('Tháng này đã khóa lịch, không thể sửa!');
+      if (role === 'Tổ trưởng' && user?.department !== emp?.department) return alert('Bạn chỉ được sửa lịch của bộ phận mình!');
+      if (role !== 'Admin') return alert('Không thể sửa lịch trước 24h!');
+    }
+
+    setSelectedCell({ date: dateStr, empId });
+    setEditData({
+      shift_id: sched?.shift_id || shifts[0]?.id || 0,
+      task: sched?.task || 'Không',
+      note: sched?.note || ''
+    });
+  };
+
+  const saveSchedule = async () => {
+    if (!selectedCell) return;
+    await fetch('/api/schedules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: selectedCell.date,
+        employee_id: selectedCell.empId,
+        shift_id: editData.shift_id,
+        task: editData.task,
+        status: 'Published',
+        note: editData.note
+      })
+    });
+    setSelectedCell(null);
+  };
+
+  const deleteSchedule = async () => {
+    if (!selectedCell) return;
+    const sched = getSchedule(selectedCell.empId, selectedCell.date);
+    if (sched) {
+      await fetch(`/api/schedules/${sched.id}`, { method: 'DELETE' });
+    }
+    setSelectedCell(null);
+  };
+
+  const deleteAnnouncement = async (id: number) => {
+    if (!confirm('Xóa thông báo này?')) return;
+    await fetch(`/api/announcements/${id}`, { method: 'DELETE' });
+  };
+
+  const addAnnouncement = async () => {
+    const message = prompt('Nhập nội dung thông báo:');
+    if (!message) return;
+    
+    let dept = 'All';
+    if (role === 'Tổ trưởng') {
+      dept = user?.department || 'All';
+    } else {
+      const isAll = confirm('Thông báo cho toàn thể? (Cancel để chọn bộ phận)');
+      if (!isAll) {
+        const d = prompt('Nhập tên bộ phận (VD: Bán hàng):');
+        if (!d) return;
+        dept = d;
+      }
+    }
+
+    await fetch('/api/announcements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        week_start: format(weekStart, 'yyyy-MM-dd'),
+        department: dept,
+        message
+      })
+    });
+  };
+
+  const departments = useMemo(() => {
+    const standard = ['All', 'Quản lý', 'Bán hàng', 'Thu ngân', 'Kỹ thuật', 'Giao vận', 'Kho'];
+    const list = [...standard];
+    employees.forEach(e => {
+      const d = (e.department || '').trim();
+      if (d && !list.some(item => normalizeDept(item) === normalizeDept(d))) {
+        list.push(d);
+      }
+    });
+    return list;
+  }, [employees]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
-      {/* Header & Filters */}
-      <div className="p-4 bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="flex flex-wrap items-center justify-between gap-4 max-w-[1600px] mx-auto">
-          <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-              <CalendarIcon className="w-6 h-6 text-indigo-600" />
-              Lịch làm việc
-            </h1>
-            <div className="flex items-center bg-slate-100 rounded-lg p-1">
-              <button onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all">
-                <ChevronLeft className="w-5 h-5 text-slate-600" />
-              </button>
-              <span className="px-4 text-sm font-bold text-slate-700 min-w-[180px] text-center">
-                {format(weekDays[0], 'dd/MM')} - {format(weekDays[6], 'dd/MM/yyyy')}
-              </span>
-              <button onClick={() => setCurrentDate(addDays(currentDate, 7))} className="p-1.5 hover:bg-white hover:shadow-sm rounded-md transition-all">
-                <ChevronRight className="w-5 h-5 text-slate-600" />
-              </button>
+    <div className="max-w-7xl mx-auto space-y-6 pb-20 md:pb-8">
+      {/* Announcement Popup */}
+      {activeAnnouncements.length > 0 && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[200] p-4">
+          <div className={clsx(
+            "bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in duration-300 border-4",
+            activeAnnouncements[currentAnnIndex].type === 'Highlight 1' ? "border-red-500" : "border-amber-500"
+          )}>
+            <div className={clsx(
+              "p-6 text-white flex justify-between items-center",
+              activeAnnouncements[currentAnnIndex].type === 'Highlight 1' ? "bg-red-500" : "bg-amber-500"
+            )}>
+              <div className="flex items-center gap-3">
+                <Info className="w-6 h-6" />
+                <div>
+                  <h3 className="text-xl font-black uppercase tracking-wider">Thông báo quan trọng</h3>
+                  <p className="text-xs opacity-80">Từ: {activeAnnouncements[currentAnnIndex].creator_name}</p>
+                </div>
+              </div>
+              <div className="text-xs font-bold bg-white/20 px-3 py-1 rounded-full">
+                {currentAnnIndex + 1} / {activeAnnouncements.length}
+              </div>
             </div>
+            
+            <div className="p-8">
+              <div className="text-slate-800 text-lg leading-relaxed whitespace-pre-wrap font-medium">
+                {activeAnnouncements[currentAnnIndex].message}
+              </div>
+              
+              <div className="mt-8 pt-6 border-t border-slate-100 flex justify-end">
+                <button 
+                  onClick={() => handleMarkAsSeen(activeAnnouncements[currentAnnIndex].id)}
+                  className={clsx(
+                    "px-8 py-3 rounded-2xl text-white font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all",
+                    activeAnnouncements[currentAnnIndex].type === 'Highlight 1' ? "bg-red-500 shadow-red-200" : "bg-amber-500 shadow-amber-200"
+                  )}
+                >
+                  Tôi đã xem và xác nhận
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header Controls */}
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+        <div className="flex flex-wrap items-center gap-4 w-full xl:w-auto">
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            <button 
+              onClick={() => setViewMode('me')}
+              className={clsx(
+                "px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer",
+                viewMode === 'me' ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              Cá nhân
+            </button>
+            {!isGuest && (
+              <button 
+                onClick={() => {
+                  setViewMode('dept');
+                  setDeptFilter(user.department);
+                }}
+                className={clsx(
+                  "px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer",
+                  viewMode === 'dept' ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                Tổ của tôi
+              </button>
+            )}
+            <button 
+              onClick={() => {
+                setViewMode('all');
+                setDeptFilter('All');
+              }}
+              className={clsx(
+                "px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer",
+                viewMode === 'all' ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              Tất cả
+            </button>
           </div>
 
-          <div className="flex items-center gap-2 flex-1 max-w-2xl">
-            <div className="relative flex-1">
+          <div className="flex items-center bg-slate-100 rounded-xl p-1 w-full sm:w-auto justify-between sm:justify-start">
+            <button onClick={handlePrevWeek} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-600 cursor-pointer"><ChevronLeft className="w-5 h-5" /></button>
+            <div className="px-2 sm:px-4 font-medium text-slate-800 flex items-center gap-2 text-sm sm:text-base cursor-pointer hover:text-indigo-600 transition-colors" onClick={handleCurrentWeek} title="Về tuần hiện tại">
+              <CalendarIcon className="w-4 h-4 text-indigo-500 hidden sm:block" />
+              Tuần {format(weekStart, 'dd/MM')} - {format(weekDays[6], 'dd/MM')}
+            </div>
+            <button onClick={handleNextWeek} className="p-2 hover:bg-white rounded-lg transition-colors text-slate-600 cursor-pointer"><ChevronRight className="w-5 h-5" /></button>
+            <button onClick={handleCurrentWeek} className="px-3 py-1.5 text-sm font-medium bg-white text-indigo-600 rounded-lg shadow-sm hover:bg-indigo-50 transition-colors ml-1 hidden sm:block cursor-pointer">Tuần hiện tại</button>
+          </div>
+          
+          {role === 'Admin' && (
+            <div className="flex gap-2 w-full sm:w-auto">
+              <button 
+                onClick={toggleMonthLock}
+                className={clsx(
+                  "flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors cursor-pointer",
+                  isMonthLocked ? "bg-amber-100 text-amber-700 hover:bg-amber-200" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                )}
+              >
+                <Lock className="w-4 h-4" />
+                <span className="hidden sm:inline">{isMonthLocked ? 'Đã khóa lịch' : 'Khóa lịch'}</span>
+                <span className="sm:hidden">{isMonthLocked ? 'Đã khóa' : 'Khóa lịch'}</span>
+              </button>
+              <button 
+                onClick={captureSchedule}
+                disabled={isCapturing}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl hover:bg-indigo-700 transition-colors text-sm font-medium shadow-sm disabled:opacity-60 cursor-pointer"
+              >
+                {isCapturing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+                <span className="hidden sm:inline">{isCapturing ? 'Đang chụp...' : 'Chụp lịch'}</span>
+                <span className="sm:hidden">{isCapturing ? 'Đang chụp' : 'Chụp'}</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3 w-full xl:w-auto">
+          {viewMode === 'all' && (
+            <div className="relative w-full sm:w-auto flex-1 xl:flex-none xl:w-48">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Tìm tên hoặc mã NV..."
-                className="w-full pl-10 pr-4 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+              <input 
+                type="text" 
+                placeholder="Tìm nhân viên..." 
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
               />
             </div>
-            {user?.role === 'Admin' && (
-              <select
-                className="bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 py-2 px-4"
+          )}
+          
+          {viewMode === 'all' && (
+            <div className="relative w-full sm:w-auto">
+              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <select 
                 value={deptFilter}
                 onChange={(e) => setDeptFilter(e.target.value)}
+                className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
               >
-                <option value="All">Tất cả bộ phận</option>
-                {Array.from(new Set(employees.map(e => e.department))).map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
+                {departments.map(d => <option key={d} value={d}>{d === 'All' ? 'Tất cả bộ phận' : d}</option>)}
               </select>
-            )}
-            {user?.role !== 'Nhân viên' && (
-              <button
-                onClick={autoSchedule}
-                className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition-colors shadow-sm"
+            </div>
+          )}
+
+          {hiddenInCurrentView.length > 0 && (
+            <button
+              onClick={() => setShowHidden(!showHidden)}
+              className={clsx(
+                "flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium border transition-colors cursor-pointer",
+                showHidden 
+                  ? "bg-rose-50 text-rose-700 border-rose-200" 
+                  : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+              )}
+              title="Nhân sự trong bộ phận này đang bị đánh dấu ẩn trên lịch"
+            >
+              {showHidden ? <EyeOff className="w-3.5 h-3.5 text-rose-500" /> : <Eye className="w-3.5 h-3.5 text-amber-600" />}
+              <span>{showHidden ? 'Đang hiện nhân sự ẩn' : `Hiện nhân sự ẩn (${hiddenInCurrentView.length})`}</span>
+            </button>
+          )}
+
+          {(role === 'Admin' || role === 'Tổ trưởng') && (
+            <div className="flex gap-2 w-full sm:w-auto">
+              <button 
+                onClick={autoScheduleSales}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-xl hover:bg-emerald-100 transition-colors text-sm font-medium"
+                title="Tự động xếp lịch cho bộ phận Bán hàng"
               >
                 <Wand2 className="w-4 h-4" />
-                Xếp lịch tự động
+                <span className="hidden sm:inline">Tự động xếp lịch (Bán hàng)</span>
+                <span className="sm:hidden">Auto xếp lịch</span>
               </button>
-            )}
-          </div>
+              <button 
+                onClick={handleCopyWeek}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl hover:bg-indigo-100 transition-colors text-sm font-medium"
+              >
+                <Copy className="w-4 h-4" />
+                <span className="hidden sm:inline">Copy tuần trước</span>
+                <span className="sm:hidden">Copy</span>
+              </button>
+              <button 
+                onClick={addAnnouncement}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-amber-50 text-amber-700 px-4 py-2 rounded-xl hover:bg-amber-100 transition-colors text-sm font-medium"
+              >
+                <Info className="w-4 h-4" />
+                <span className="hidden sm:inline">Thêm thông báo</span>
+                <span className="sm:hidden">Thông báo</span>
+              </button>
+              <button 
+                onClick={() => setShowTaskForm(true)}
+                className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-slate-100 text-slate-700 px-4 py-2 rounded-xl hover:bg-slate-200 transition-colors text-sm font-medium"
+              >
+                <Search className="w-4 h-4" />
+                <span className="hidden sm:inline">Quản lý nhiệm vụ</span>
+                <span className="sm:hidden">Nhiệm vụ</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Grid Lịch */}
-      <div className="flex-1 overflow-auto p-4">
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-w-[1000px]">
+      {/* Announcements */}
+      {announcements.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 shadow-sm">
+          <h3 className="text-amber-800 font-bold mb-2 flex items-center gap-2">
+            <Info className="w-5 h-5" />
+            Thông báo tuần này
+          </h3>
+          <div className="space-y-2">
+            {announcements.map(ann => (
+              <div key={ann.id} className="bg-white p-3 rounded-xl border border-amber-100 text-sm text-slate-700 flex justify-between items-start">
+                <div>
+                  <span className="font-bold text-amber-700 mr-2">[{ann.department === 'All' ? 'Toàn thể' : ann.department}]</span>
+                  {ann.message}
+                </div>
+                {(role === 'Admin' || (role === 'Tổ trưởng' && user?.department === ann.department)) && (
+                  <button 
+                    onClick={() => deleteAnnouncement(ann.id)}
+                    className="text-red-500 hover:text-red-700 p-1"
+                  >
+                    Xóa
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Desktop Table View (Hidden on mobile) */}
+      <div className="hidden md:block bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden" ref={scheduleRef}>
+        <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="p-4 text-left text-xs font-bold text-slate-500 uppercase tracking-wider sticky left-0 bg-slate-50 z-20 w-[200px]">
-                  Nhân viên
+              <tr>
+                <th className="bg-slate-50 p-4 border-b border-r border-slate-200 text-left w-64 sticky left-0 z-20">
+                  <span className="text-sm font-semibold text-slate-600 uppercase tracking-wider">Nhân viên / Staff</span>
                 </th>
                 {weekDays.map(day => (
-                  <th key={day.toString()} className={clsx(
-                    "p-4 text-center border-l border-slate-100",
+                  <th key={day.toISOString()} className={clsx(
+                    "bg-slate-50 p-3 border-b border-slate-200 text-center min-w-[120px]",
                     isSameDay(day, new Date()) && "bg-indigo-50/50"
                   )}>
-                    <div className="text-xs font-bold text-slate-400 uppercase">{format(day, 'EEEE', { locale: vi })}</div>
+                    <div className="text-xs font-medium text-slate-500 uppercase">{format(day, 'EEEE', { locale: vi })}</div>
                     <div className={clsx(
-                      "text-lg font-black mt-1",
-                      isSameDay(day, new Date()) ? "text-indigo-600" : "text-slate-700"
-                    )}>
-                      {format(day, 'dd/MM')}
-                    </div>
+                      "text-sm font-bold mt-1",
+                      isSameDay(day, new Date()) ? "text-indigo-600" : "text-slate-800"
+                    )}>{format(day, 'dd/MM')}</div>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredEmployees.map(emp => (
-                <tr key={emp.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
-                  <td className="p-4 sticky left-0 bg-white z-10 border-r border-slate-100 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
-                    <div className="font-bold text-slate-800 text-sm">{emp.name}</div>
-                    <div className="text-[10px] text-slate-400 font-medium mt-0.5">{emp.code} • {emp.department}</div>
-                  </td>
-                  {weekDays.map(day => {
-                    const dateStr = format(day, 'yyyy-MM-dd');
-                    const sched = schedules.find(s => s.date === dateStr && s.employee_id === emp.id);
-                    const canEdit = user?.role === 'Admin' || (user?.role === 'Tổ trưởng' && user.department === emp.department);
-
-                    return (
-                      <td
-                        key={dateStr}
-                        onClick={() => canEdit && handleCellClick(day, emp.id)}
-                        className={clsx(
-                          "p-2 border-l border-slate-50 h-[100px] vertical-top transition-all",
-                          canEdit ? "cursor-pointer hover:bg-indigo-50/30" : "cursor-default",
-                          isSameDay(day, new Date()) && "bg-indigo-50/20"
-                        )}
-                      >
-                        {sched ? (
-                          <div 
-                            className="h-full rounded-xl p-2 flex flex-col justify-between shadow-sm relative overflow-hidden group"
-                            style={{ backgroundColor: sched.color, color: sched.text_color }}
-                          >
-                            <div>
-                              <div className="text-[10px] font-black uppercase opacity-80">{sched.shift_name}</div>
-                              <div className="text-[11px] font-bold mt-0.5">{sched.start_time} - {sched.end_time}</div>
+              {filteredEmployees.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-16 text-center">
+                    <div className="flex flex-col items-center justify-center">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mb-3 text-slate-400">
+                        <Users className="w-6 h-6" />
+                      </div>
+                      <div className="font-bold text-slate-700 text-base">
+                        Chưa có nhân viên hiển thị trên lịch {deptFilter !== 'All' ? `cho bộ phận "${deptFilter}"` : ''}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1 max-w-md">
+                        {hiddenInCurrentView.length > 0 ? (
+                          <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-left">
+                            <div className="font-semibold text-xs flex items-center gap-1.5 text-amber-900">
+                              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                              <span>Phát hiện {hiddenInCurrentView.length} nhân viên trong bộ phận này đang ở trạng thái "Đã ẩn lịch":</span>
                             </div>
-                            
-                            {sched.task && sched.task !== 'Không' && sched.task !== 'Tăng ca' && (
-                              <div className="mt-auto">
-                                <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-black bg-white/20 backdrop-blur-md">
-                                  {sched.task}
-                                </span>
-                              </div>
-                            )}
-
-                            {sched.note && (
-                              <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <Info className="w-3 h-3" />
-                              </div>
-                            )}
+                            <div className="mt-1.5 font-mono text-[11px] text-amber-900 pl-5">
+                              {hiddenInCurrentView.map(e => `${e.name} (${e.code})`).join(', ')}
+                            </div>
+                            <div className="mt-3 flex items-center gap-2 pl-5">
+                              <button 
+                                onClick={() => handleUnhideDept(deptFilter)}
+                                className="bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-sm cursor-pointer transition-colors"
+                              >
+                                Bật hiển thị trên lịch ngay
+                              </button>
+                              <button 
+                                onClick={() => setShowHidden(true)}
+                                className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                              >
+                                Xem tạm thời
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <div className="h-full border-2 border-dashed border-slate-100 rounded-xl flex items-center justify-center">
-                            <span className="text-[10px] font-bold text-slate-300">TRỐNG</span>
-                          </div>
+                          <>
+                            Các nhân viên có thể đã được ẩn hoặc hệ thống chưa đồng bộ từ Google Sheets.<br />
+                            Bạn có thể kiểm tra tab <strong>Nhân sự</strong> hoặc <strong>Cài đặt dữ liệu</strong>.
+                          </>
                         )}
-                      </td>
-                    );
-                  })}
+                      </div>
+                    </div>
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                Array.from(new Set(filteredEmployees.map(e => normalizeDept(e.department)))).map(normDept => {
+                  const deptEmps = filteredEmployees.filter(e => normalizeDept(e.department) === normDept);
+                  const displayDeptName = normDept === 'quản lý' ? 'Quản lý' : (deptEmps[0]?.department?.trim() || normDept);
+
+                  return (
+                    <React.Fragment key={normDept}>
+                      <tr className="bg-slate-100/80 border-y border-slate-200">
+                        <td colSpan={8} className="p-3 font-bold text-slate-700 uppercase tracking-wider text-sm sticky left-0 z-20 bg-slate-100/80">
+                          Bộ phận: {displayDeptName}
+                        </td>
+                      </tr>
+                      {deptEmps.map(emp => (
+                        <tr key={emp.id} className="group hover:bg-slate-50/50">
+                          <td className="p-4 border-b border-r border-slate-100 bg-white group-hover:bg-slate-50/50 sticky left-0 z-10">
+                            <div className="font-medium text-slate-800 flex items-center gap-1.5 flex-wrap">
+                              <span>{emp.name}</span>
+                              {Boolean(emp.is_hidden) && (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded border border-amber-200 font-normal">Đã ẩn</span>
+                              )}
+                              {emp.end_date && new Date().toISOString().split('T')[0] > emp.end_date && (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-red-50 text-red-600 rounded border border-red-200 font-normal">Đã nghỉ</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+                              <span className="font-mono">{emp.code}</span>
+                              <span className="w-1 h-1 rounded-full bg-slate-300"></span>
+                              <span>{emp.role}</span>
+                            </div>
+                          </td>
+                          {weekDays.map(day => {
+                            const dateStr = format(day, 'yyyy-MM-dd');
+                            const sched = getSchedule(emp.id, dateStr);
+                            const taskObj = tasks.find(t => t.name === sched?.task && (normalizeDept(t.department) === normalizeDept(emp.department) || t.department === 'All'));
+                            const taskColor = taskObj?.color;
+                            const taskTextColor = taskObj?.text_color;
+                            const editable = canEdit(dateStr, sched?.start_time, emp.department);
+                            
+                            return (
+                              <td 
+                                key={dateStr} 
+                                className={clsx(
+                                  "p-2 border-b border-slate-100 relative group/cell transition-all",
+                                  editable ? "hover:bg-slate-100 cursor-pointer" : "cursor-default"
+                                )}
+                                onClick={() => editable && openEditModal(emp.id, dateStr)}
+                              >
+                                {sched ? (
+                                  <div 
+                                    className="h-full min-h-[60px] rounded-xl p-2 flex flex-col justify-between border border-black/5 shadow-sm"
+                                    style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
+                                  >
+                                    <div className="text-sm font-black uppercase tracking-wide whitespace-pre-line leading-tight">
+                                      {sched.shift_name.toUpperCase() === 'OFF KHÔNG LƯƠNG' ? 'OFF\nKHÔNG LƯƠNG' : sched.shift_name}
+                                    </div>
+                                    
+                                    {sched.task && sched.task !== 'Không' && (
+                                      <div 
+                                        className="text-[10px] font-medium px-1.5 py-0.5 rounded mt-1 truncate"
+                                        style={{ backgroundColor: taskColor, color: taskTextColor }}
+                                      >
+                                        {sched.task}
+                                      </div>
+                                    )}
+
+                                    {/* Tooltip */}
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-[200px] bg-slate-800 text-white text-xs rounded-lg py-1.5 px-3 opacity-0 group-hover/cell:opacity-100 pointer-events-none transition-opacity z-30 shadow-xl">
+                                      <div className="font-bold mb-1">{emp.name}</div>
+                                      <div>Ca: {sched.shift_name} ({sched.start_time} - {sched.end_time})</div>
+                                      {sched.task && sched.task !== 'Không' && <div>Nhiệm vụ: {sched.task}</div>}
+                                      {sched.note && <div className="mt-1 text-slate-300 italic border-t border-slate-600 pt-1">Ghi chú: {sched.note}</div>}
+                                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800"></div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className={clsx(
+                                    "h-full min-h-[60px] rounded-xl border border-dashed border-slate-200 flex items-center justify-center transition-opacity",
+                                    editable ? "opacity-0 group-hover/cell:opacity-100" : "opacity-0"
+                                  )}>
+                                    <span className="text-xs text-slate-400 font-medium">+ Thêm ca</span>
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Modal chỉnh sửa */}
-      {selectedCell && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <div>
-                <h3 className="text-lg font-black text-slate-800">Cập nhật lịch trực</h3>
-                <p className="text-xs text-slate-500 font-medium mt-0.5">Ngày {format(parseISO(selectedCell.date), 'dd/MM/yyyy')}</p>
+      {/* Mobile Card View (Hidden on desktop) */}
+      <div className="md:hidden space-y-4">
+        {filteredEmployees.length === 0 ? (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 text-center">
+            <div className="flex flex-col items-center justify-center">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mb-3 text-slate-400">
+                <Users className="w-6 h-6" />
               </div>
-              <button onClick={() => setSelectedCell(null)} className="p-2 hover:bg-white rounded-full shadow-sm transition-all text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="font-bold text-slate-700 text-base">
+                Chưa có nhân viên hiển thị trên lịch {deptFilter !== 'All' ? `cho bộ phận "${deptFilter}"` : ''}
+              </div>
+              <div className="text-xs text-slate-500 mt-1 max-w-md">
+                {hiddenInCurrentView.length > 0 ? (
+                  <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-left">
+                    <div className="font-semibold text-xs flex items-center gap-1.5 text-amber-900">
+                      <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <span>Có {hiddenInCurrentView.length} nhân viên đang ở trạng thái "Đã ẩn lịch":</span>
+                    </div>
+                    <div className="mt-1.5 font-mono text-[11px] text-amber-900">
+                      {hiddenInCurrentView.map(e => e.name).join(', ')}
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button 
+                        onClick={() => handleUnhideDept(deptFilter)}
+                        className="bg-amber-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm cursor-pointer"
+                      >
+                        Bật hiển thị lại ngay
+                      </button>
+                      <button 
+                        onClick={() => setShowHidden(true)}
+                        className="bg-white text-slate-700 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
+                      >
+                        Xem tạm thời
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    Các nhân viên có thể đã được ẩn hoặc hệ thống chưa đồng bộ từ Google Sheets.<br />
+                    Bạn có thể kiểm tra tab Nhân sự hoặc Cài đặt dữ liệu.
+                  </>
+                )}
+              </div>
             </div>
+          </div>
+        ) : (
+          weekDays.map(day => {
+            const dateStr = format(day, 'yyyy-MM-dd');
+            const isToday = isSameDay(day, new Date());
+            
+            return (
+              <div key={dateStr} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className={clsx(
+                  "p-3 border-b border-slate-100 flex items-center justify-between",
+                  isToday ? "bg-indigo-50" : "bg-slate-50"
+                )}>
+                  <div className="flex items-center gap-2">
+                    <CalendarIcon className={clsx("w-4 h-4", isToday ? "text-indigo-600" : "text-slate-500")} />
+                    <span className={clsx("font-bold text-sm", isToday ? "text-indigo-700" : "text-slate-700")}>
+                      {format(day, 'EEEE, dd/MM', { locale: vi })}
+                    </span>
+                  </div>
+                  {isToday && <span className="text-[10px] font-bold bg-indigo-600 text-white px-2 py-0.5 rounded-full">Hôm nay</span>}
+                </div>
+                
+                <div className="divide-y divide-slate-100">
+                  {Array.from(new Set(filteredEmployees.map(e => normalizeDept(e.department)))).map(normDept => {
+                    const deptEmps = filteredEmployees.filter(e => normalizeDept(e.department) === normDept);
+                    const displayDeptName = normDept === 'quản lý' ? 'Quản lý' : (deptEmps[0]?.department?.trim() || normDept);
 
-            <div className="p-6 space-y-6">
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-wider">Chọn ca làm việc</label>
+                    return (
+                      <React.Fragment key={normDept}>
+                        <div className="bg-slate-100/80 px-4 py-2 text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center justify-between">
+                          <span>{displayDeptName}</span>
+                          <span className="text-[10px] text-slate-400 font-normal">{deptEmps.length} nhân sự</span>
+                        </div>
+                      {deptEmps.map(emp => {
+                        const sched = getSchedule(emp.id, dateStr);
+                        const isResigned = emp.end_date && new Date().toISOString().split('T')[0] > emp.end_date;
+                        const taskObj = tasks.find(t => t.name === sched?.task && (normalizeDept(t.department) === normalizeDept(emp.department) || t.department === 'All'));
+                        const taskColor = taskObj?.color;
+                        const taskTextColor = taskObj?.text_color;
+                        const editable = canEdit(dateStr, sched?.start_time, emp.department);
+
+                        return (
+                          <div 
+                            key={emp.id} 
+                            onClick={() => editable && openEditModal(emp.id, dateStr)}
+                            className={clsx(
+                              "p-3 flex items-center justify-between",
+                              editable ? "active:bg-slate-50 cursor-pointer" : ""
+                            )}
+                          >
+                            <div>
+                              <div className="font-medium text-slate-800 text-sm flex items-center gap-1.5 flex-wrap">
+                                <span>{emp.name}</span>
+                                {Boolean(emp.is_hidden) && (
+                                  <span className="text-[10px] px-1.5 py-0.2 bg-amber-50 text-amber-700 rounded border border-amber-200 font-normal">Đã ẩn</span>
+                                )}
+                                {isResigned && (
+                                  <span className="text-[10px] px-1.5 py-0.2 bg-red-50 text-red-600 rounded border border-red-200 font-normal">Đã nghỉ</span>
+                                )}
+                              </div>
+                              <div className="text-xs text-slate-500 mt-0.5">{emp.code}</div>
+                            </div>
+                            
+                            {sched ? (
+                              <div className="flex flex-col items-end gap-1">
+                                <div 
+                                  className="px-3 py-1 rounded-lg text-sm font-black uppercase tracking-wide border border-black/5 shadow-sm whitespace-pre-line text-right leading-tight"
+                                  style={{ backgroundColor: sched.color, color: sched.text_color, opacity: editable ? 1 : 0.8 }}
+                                >
+                                  {sched.shift_name.toUpperCase() === 'OFF KHÔNG LƯƠNG' ? 'OFF\nKHÔNG LƯƠNG' : sched.shift_name}
+                                </div>
+                                {sched.task && sched.task !== 'Không' && (
+                                  <span 
+                                    className="text-[10px] font-medium px-2 py-0.5 rounded-md"
+                                    style={{ backgroundColor: taskColor, color: taskTextColor }}
+                                  >
+                                    {sched.task}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div>
+                                {editable ? (
+                                  <span className="text-xs text-indigo-600 font-medium px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer">
+                                    + Thêm ca
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-slate-400 italic">Chưa xếp ca</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+                {filteredEmployees.length === 0 && (
+                  <div className="p-4 text-center text-sm text-slate-500">Không có dữ liệu</div>
+                )}
+              </div>
+            </div>
+          );
+        }))}
+      </div>
+
+      {/* Edit Modal */}
+      {selectedCell && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-5 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800">
+                {employees.find(e => e.id === selectedCell.empId)?.name}
+              </h3>
+              <p className="text-sm text-slate-500 mt-1">
+                Ngày: {format(parseISO(selectedCell.date), 'dd/MM/yyyy')}
+              </p>
+            </div>
+            
+            <div className="p-5 space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Ca làm việc</label>
                 <div className="grid grid-cols-2 gap-2">
                   {shifts.map(s => (
                     <button
                       key={s.id}
                       onClick={() => setEditData({ ...editData, shift_id: s.id })}
                       className={clsx(
-                        "p-3 rounded-2xl text-left border-2 transition-all relative overflow-hidden",
-                        editData.shift_id === s.id ? "border-indigo-600 ring-2 ring-indigo-100" : "border-slate-100 hover:border-slate-200"
+                        "p-2 rounded-xl text-sm font-bold uppercase tracking-wide border transition-all",
+                        editData.shift_id === s.id ? "ring-2 ring-indigo-500 border-transparent shadow-sm" : "border-slate-200 hover:border-indigo-300"
                       )}
-                      style={{ backgroundColor: editData.shift_id === s.id ? s.color : 'transparent' }}
+                      style={{ 
+                        backgroundColor: editData.shift_id === s.id ? s.color : '#fff',
+                        color: editData.shift_id === s.id ? s.text_color : '#334155'
+                      }}
                     >
-                      <div className="text-xs font-black" style={{ color: editData.shift_id === s.id ? s.text_color : '#64748b' }}>{s.name}</div>
-                      <div className="text-[10px] font-bold mt-0.5 opacity-60" style={{ color: editData.shift_id === s.id ? s.text_color : '#94a3b8' }}>{s.start_time}-{s.end_time}</div>
+                      {s.name}
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-wider">Gán nhiệm vụ</label>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Nhiệm vụ đặc biệt</label>
                 <div className="flex flex-wrap gap-2">
-                  {['Không', 'Hotline', 'Trực cửa', 'Vệ sinh'].map(t => (
+                  <button
+                    onClick={() => setEditData({ ...editData, task: 'Không' })}
+                    className={clsx(
+                      "px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
+                      editData.task === 'Không' ? "ring-2 ring-indigo-500 border-transparent shadow-sm bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    )}
+                  >
+                    Không
+                  </button>
+                  {getDeptTasks(employees.find(e => e.id === selectedCell.empId)?.department || '').map(t => (
                     <button
-                      key={t}
-                      onClick={() => setEditData({ ...editData, task: t })}
+                      key={t.id}
+                      onClick={() => setEditData({ ...editData, task: t.name })}
                       className={clsx(
-                        "px-4 py-2 rounded-xl text-xs font-bold transition-all",
-                        editData.task === t ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200 scale-105" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        "px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
+                        editData.task === t.name ? "ring-2 ring-indigo-500 border-transparent shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                       )}
+                      style={editData.task === t.name ? { backgroundColor: t.color, color: t.text_color } : {}}
                     >
-                      {t}
+                      {t.name}
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-wider">Ghi chú (nếu có)</label>
-                <textarea
-                  className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none"
-                  rows={3}
-                  placeholder="Nhập ghi chú cho nhân viên..."
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Ghi chú</label>
+                <input 
+                  type="text" 
                   value={editData.note}
                   onChange={(e) => setEditData({ ...editData, note: e.target.value })}
+                  placeholder="Nhập ghi chú (nếu có)..."
+                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
                 />
               </div>
             </div>
+            
+            <div className="p-4 border-t border-slate-100 flex justify-between gap-3 bg-slate-50">
+              {getSchedule(selectedCell.empId, selectedCell.date) ? (
+                <button 
+                  onClick={deleteSchedule} 
+                  className="px-4 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl text-sm font-medium transition-colors"
+                >
+                  Xóa ca
+                </button>
+              ) : <div></div>}
+              
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setSelectedCell(null)} 
+                  className="px-4 py-2 text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-sm font-medium transition-colors"
+                >
+                  Hủy
+                </button>
+                <button 
+                  onClick={saveSchedule} 
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm"
+                >
+                  Lưu lại
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Task Management Modal */}
+      {showTaskForm && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[110] p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800">Quản lý nhiệm vụ - {user?.department}</h3>
+              <button onClick={() => setShowTaskForm(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <form onSubmit={handleAddTask} className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="text-sm font-bold text-slate-700">Thêm nhiệm vụ mới</div>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Tên nhiệm vụ (VD: Trực Hotline)"
+                  value={newTask.name}
+                  onChange={e => setNewTask({...newTask, name: e.target.value})}
+                  className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Màu nền</label>
+                    <input 
+                      type="color" 
+                      value={newTask.color}
+                      onChange={e => setNewTask({...newTask, color: e.target.value})}
+                      className="w-full h-8 p-0 border-0 rounded cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Màu chữ</label>
+                    <input 
+                      type="color" 
+                      value={newTask.text_color}
+                      onChange={e => setNewTask({...newTask, text_color: e.target.value})}
+                      className="w-full h-8 p-0 border-0 rounded cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <button type="submit" className="w-full bg-indigo-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 transition-colors">
+                  Thêm nhiệm vụ
+                </button>
+              </form>
 
-            <div className="p-6 bg-slate-50/50 flex gap-3">
-              <button onClick={() => setSelectedCell(null)} className="flex-1 py-3 text-sm font-bold text-slate-500 hover:text-slate-700 transition-colors">Hủy</button>
-              <button onClick={saveSchedule} className="flex-[2] bg-indigo-600 text-white py-3 rounded-2xl text-sm font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200">
-                Xác nhận lưu
-              </button>
+              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                <div className="text-sm font-bold text-slate-700">Danh sách nhiệm vụ hiện tại</div>
+                {getDeptTasks(user?.department || '').map(t => (
+                  <div key={t.id} className="flex items-center justify-between p-3 bg-white border border-slate-100 rounded-xl shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <div className="w-4 h-4 rounded" style={{ backgroundColor: t.color }}></div>
+                      <span className="text-sm font-medium text-slate-700">{t.name}</span>
+                      {t.department === 'All' && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">Hệ thống</span>}
+                    </div>
+                    {t.department !== 'All' && (
+                      <button onClick={() => handleDeleteTask(t.id)} className="text-red-400 hover:text-red-600 p-1">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

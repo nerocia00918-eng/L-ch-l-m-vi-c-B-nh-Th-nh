@@ -113,7 +113,7 @@ async function loadFromGoogleSheets() {
         db.prepare('DELETE FROM tasks').run();
 
         if (data.employees.length > 0) {
-          const insertEmp = db.prepare('INSERT INTO employees (id, code, name, department, role, phone, password) VALUES (?, ?, ?, ?, ?, ?, ?)');
+          const insertEmp = db.prepare('INSERT INTO employees (id, code, name, department, role, phone, password, start_date, end_date, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
           let hasAdmin = false;
           data.employees.forEach((e: any) => {
             let role = e.role || 'Nhân viên';
@@ -129,16 +129,41 @@ async function loadFromGoogleSheets() {
               password = '1234';
             }
             
-            insertEmp.run(e.id, e.code, e.name, e.department, role, e.phone, password);
+            const startDate = e.start_date ? String(e.start_date).trim() : '';
+            const endDate = e.end_date ? String(e.end_date).trim() : '';
+            
+            let dept = e.department ? String(e.department).trim().normalize('NFC') : 'Quản lý';
+            const normDept = dept.toLowerCase().replace(/[\u00A0\s]+/g, ' ').replace(/^(ban|bộ phận|khối|phòng|tổ)\s+/gi, '').trim();
+            if (
+              normDept === 'quản lý' ||
+              normDept === 'quản lí' ||
+              normDept === 'ql' ||
+              normDept === 'bql' ||
+              normDept === 'admin' ||
+              normDept === 'quản trị' ||
+              normDept === 'quản trị viên' ||
+              normDept === 'ban giám đốc' ||
+              normDept === 'điều hành'
+            ) {
+              dept = 'Quản lý';
+            }
+
+            let isHidden = (e.is_hidden === 1 || e.is_hidden === '1' || e.is_hidden === true || String(e.is_hidden).toLowerCase() === 'true' || String(e.is_hidden).toLowerCase() === 'ẩn') ? 1 : 0;
+            // Safeguard: Do not accidentally hide Admin or Management department
+            if ((role === 'Admin' || dept === 'Quản lý') && e.is_hidden !== 1 && e.is_hidden !== '1' && e.is_hidden !== true) {
+              isHidden = 0;
+            }
+            
+            insertEmp.run(e.id, String(e.code || '').trim(), String(e.name || '').trim(), dept, role, e.phone || '', password, startDate, endDate, isHidden);
           });
           
           if (!hasAdmin) {
-            const insertDefaultAdmin = db.prepare('INSERT INTO employees (code, name, department, role, phone, password) VALUES (?, ?, ?, ?, ?, ?)');
-            insertDefaultAdmin.run('ADMIN', 'Quản trị viên', 'Quản lý', 'Admin', '0999999999', '1234');
+            const insertDefaultAdmin = db.prepare('INSERT INTO employees (code, name, department, role, phone, password, start_date, end_date, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            insertDefaultAdmin.run('ADMIN', 'Quản trị viên', 'Quản lý', 'Admin', '0999999999', '1234', '', '', 0);
           }
         } else {
-          const insertDefaultAdmin = db.prepare('INSERT INTO employees (code, name, department, role, phone, password) VALUES (?, ?, ?, ?, ?, ?)');
-          insertDefaultAdmin.run('ADMIN', 'Quản trị viên', 'Quản lý', 'Admin', '0999999999', '1234');
+          const insertDefaultAdmin = db.prepare('INSERT INTO employees (code, name, department, role, phone, password, start_date, end_date, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+          insertDefaultAdmin.run('ADMIN', 'Quản trị viên', 'Quản lý', 'Admin', '0999999999', '1234', '', '', 0);
         }
 
         if (data.shifts && data.shifts.length > 0) {
@@ -267,9 +292,18 @@ db.exec(`
   );
 `);
 
-// Add password column to employees if not exists
+// Add password, start_date, end_date and is_hidden columns to employees if not exists
 try {
   db.exec('ALTER TABLE employees ADD COLUMN password TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE employees ADD COLUMN start_date TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE employees ADD COLUMN end_date TEXT');
+} catch (e) {}
+try {
+  db.exec('ALTER TABLE employees ADD COLUMN is_hidden INTEGER DEFAULT 0');
 } catch (e) {}
 
 // Add start_time and end_time to announcements if not exists
@@ -367,10 +401,13 @@ async function startServer() {
   });
 
   app.post('/api/employees', (req, res) => {
-    const { code, name, department, role, phone } = req.body;
+    const { code, name, department, role, phone, start_date, end_date, is_hidden } = req.body;
     try {
-      const result = db.prepare('INSERT INTO employees (code, name, department, role, phone) VALUES (?, ?, ?, ?, ?)')
-        .run(code, name, department, role, phone);
+      let dept = department ? String(department).trim().normalize('NFC') : 'Quản lý';
+      if (dept.toLowerCase() === 'quản lí') dept = 'Quản lý';
+
+      const result = db.prepare('INSERT INTO employees (code, name, department, role, phone, start_date, end_date, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(String(code || '').trim(), String(name || '').trim(), dept, role || 'Nhân viên', phone || '', start_date || '', end_date || '', is_hidden ? 1 : 0);
       const newEmployee = db.prepare('SELECT * FROM employees WHERE id = ?').get(result.lastInsertRowid);
       io.emit('employees:updated');
       triggerSync();
@@ -381,16 +418,59 @@ async function startServer() {
   });
 
   app.put('/api/employees/:id', (req, res) => {
-    const { code, name, department, role, phone } = req.body;
+    const { code, name, department, role, phone, start_date, end_date, is_hidden } = req.body;
     try {
-      db.prepare('UPDATE employees SET code = ?, name = ?, department = ?, role = ?, phone = ? WHERE id = ?')
-        .run(code, name, department, role, phone, req.params.id);
+      let dept = department ? String(department).trim().normalize('NFC') : 'Quản lý';
+      if (dept.toLowerCase() === 'quản lí') dept = 'Quản lý';
+
+      db.prepare('UPDATE employees SET code = ?, name = ?, department = ?, role = ?, phone = ?, start_date = ?, end_date = ?, is_hidden = ? WHERE id = ?')
+        .run(String(code || '').trim(), String(name || '').trim(), dept, role || 'Nhân viên', phone || '', start_date || '', end_date || '', is_hidden ? 1 : 0, req.params.id);
       io.emit('employees:updated');
       io.emit('schedules:updated');
       triggerSync();
       res.json({ success: true });
     } catch (error) {
       res.status(400).json({ error: 'Mã nhân viên đã tồn tại hoặc lỗi dữ liệu' });
+    }
+  });
+
+  app.patch('/api/employees/:id/toggle-hide', (req, res) => {
+    try {
+      const emp = db.prepare('SELECT is_hidden FROM employees WHERE id = ?').get(req.params.id) as { is_hidden?: number } | undefined;
+      if (!emp) return res.status(404).json({ error: 'Không tìm thấy nhân viên' });
+      
+      const newHidden = emp.is_hidden ? 0 : 1;
+      db.prepare('UPDATE employees SET is_hidden = ? WHERE id = ?').run(newHidden, req.params.id);
+      io.emit('employees:updated');
+      io.emit('schedules:updated');
+      triggerSync();
+      res.json({ success: true, is_hidden: newHidden });
+    } catch (error) {
+      res.status(500).json({ error: 'Lỗi khi cập nhật trạng thái ẩn lịch' });
+    }
+  });
+
+  app.post('/api/employees/unhide-all', (req, res) => {
+    try {
+      const { department } = req.body || {};
+      if (department && department !== 'All') {
+        const norm = String(department).trim().toLowerCase();
+        const allEmps = db.prepare('SELECT id, department FROM employees').all() as { id: number, department: string }[];
+        allEmps.forEach(emp => {
+          const d = (emp.department || '').trim().toLowerCase();
+          if (d === norm || (norm.includes('quản') && (d.includes('quản') || d.includes('admin') || d.includes('ql')))) {
+            db.prepare('UPDATE employees SET is_hidden = 0 WHERE id = ?').run(emp.id);
+          }
+        });
+      } else {
+        db.prepare('UPDATE employees SET is_hidden = 0').run();
+      }
+      io.emit('employees:updated');
+      io.emit('schedules:updated');
+      triggerSync();
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -428,50 +508,6 @@ async function startServer() {
     res.json(schedules);
   });
 
-  function autoBalance(date: string, employee_id: number) {
-    const emp = db.prepare('SELECT department FROM employees WHERE id = ?').get(employee_id) as { department: string } | undefined;
-    if (!emp) return;
-
-    const dept = emp.department;
-    const tcShift = db.prepare("SELECT id FROM shifts WHERE UPPER(name) = 'TĂNG CA'").get() as { id: number } | undefined;
-    if (!tcShift) return;
-
-    // Check if anyone in this dept is OFF today
-    const offCountRow = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM schedules s
-      JOIN shifts sh ON s.shift_id = sh.id
-      JOIN employees e ON s.employee_id = e.id
-      WHERE s.date = ? AND e.department = ? AND UPPER(sh.name) LIKE '%OFF%'
-    `).get(date, dept) as { count: number };
-
-    if (offCountRow.count > 0) {
-      // Someone is OFF, so find others who are NOT OFF and set them to TĂNG CA
-      const others = db.prepare(`
-        SELECT e.id, s.id as schedule_id, sh.name as shift_name
-        FROM employees e
-        LEFT JOIN schedules s ON e.id = s.employee_id AND s.date = ?
-        LEFT JOIN shifts sh ON s.shift_id = sh.id
-        WHERE e.department = ?
-      `).all(date, dept) as any[];
-
-      others.forEach(other => {
-        const isOff = other.shift_name && other.shift_name.toUpperCase().includes('OFF');
-        const isTC = other.shift_name && other.shift_name.toUpperCase() === 'TĂNG CA';
-        
-        if (!isOff && !isTC) {
-          if (other.schedule_id) {
-            db.prepare('UPDATE schedules SET shift_id = ?, note = ? WHERE id = ?')
-              .run(tcShift.id, 'Tự động bù ca do đồng nghiệp OFF', other.schedule_id);
-          } else {
-            db.prepare('INSERT INTO schedules (date, employee_id, shift_id, task, status, note) VALUES (?, ?, ?, ?, ?, ?)')
-              .run(date, other.id, tcShift.id, 'Không', 'Chính thức', 'Tự động bù ca do đồng nghiệp OFF');
-          }
-        }
-      });
-    }
-  }
-
   app.post('/api/schedules', (req, res) => {
     const { date, employee_id, shift_id, task, status, note } = req.body;
     
@@ -491,9 +527,6 @@ async function startServer() {
       db.prepare('INSERT INTO schedules (date, employee_id, shift_id, task, status, note) VALUES (?, ?, ?, ?, ?, ?)')
         .run(date, employee_id, shift_id, task, status, note || '');
     }
-    
-    // Auto balance
-    autoBalance(date, employee_id);
 
     io.emit('schedules:updated');
     triggerSync();
@@ -501,13 +534,7 @@ async function startServer() {
   });
 
   app.delete('/api/schedules/:id', (req, res) => {
-    const sched = db.prepare('SELECT date, employee_id FROM schedules WHERE id = ?').get(req.params.id) as { date: string, employee_id: number } | undefined;
-    
     db.prepare('DELETE FROM schedules WHERE id = ?').run(req.params.id);
-    
-    if (sched) {
-      autoBalance(sched.date, sched.employee_id);
-    }
 
     io.emit('schedules:updated');
     triggerSync();
